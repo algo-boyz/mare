@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package detection.v1;
+
+option cc_enable_arenas = true;
+
+import "google/protobuf/timestamp.proto";
+
+// Axis-aligned bounding box in original image coordinates
+message BoundingBox {
+  float x1 = 1;
+  float y1 = 2;
+  float x2 = 3;
+  float y2 = 4;
+}
+
+message Detection {
+  int32  class_id    = 1;
+  string class_name  = 2;
+  float  confidence  = 3;
+  BoundingBox box    = 4;
+}
+
+// One pipeline alert (frame + detections + latency)
+message Alert {
+  int64  frame_id           = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  repeated Detection detections = 3;
+  bool   watchlist_hit      = 4;
+  string matched_label      = 5;   // eg person
+  double e2e_latency_ms     = 6;
+  string source             = 7;   // cam index / video path
+  map<string, string> labels = 8;  // site, camera_id, etc.
+}

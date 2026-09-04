@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package common.v1;
+
+option cc_enable_arenas = true;
+
+// Domain-level error returned inside responses
+// (not transport-level grpc status)
+message DomainError {
+  string code = 1;
+  string message = 2;
+}

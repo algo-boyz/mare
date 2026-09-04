@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package detection.v1;
+
+option cc_enable_arenas = true;
+
+import "detection/v1/detection.proto";
+
+message StreamAnnotatedVideoRequest {
+  // Path relative to VIDEO_ROOT or absolute. Example: "sample.mp4"
+  string source = 1;
+
+  // Inclusive start frame (0 = beginning)
+  int64 start_frame_id = 2;
+
+  // Exclusive end frame (0 = until end of video)
+  int64 end_frame_id = 3;
+
+  // If true, only emit frames that have at least one detection in ClickHouse
+  bool only_with_detections = 4;
+
+  // JPEG quality 1-100 (default 85)
+  int32 jpeg_quality = 5;
+}
+
+message AnnotatedFrame {
+  int64  frame_id        = 1;
+  int32  width           = 2;
+  int32  height          = 3;
+  bytes  jpeg            = 4;   // annotated JPEG
+  int32  detection_count = 5;
+  repeated Detection detections = 6;  // the boxes that were drawn
+}
+
+message DownloadAnnotatedVideoRequest {
+  string source = 1;
+  int64 start_frame_id = 2;
+  int64 end_frame_id = 3;
+  int32 fps = 4; // Optional override; defaults to source FPS
+}
+
+message DownloadAnnotatedVideoResponse {
+  string download_url = 1; // Or raw `bytes video_data = 1;` if returning direct binary payload
+  int64 total_frames = 2;
+  double duration_sec = 3;
+}
+
+service AnnotatedVideoService {
+  rpc StreamAnnotatedVideo(StreamAnnotatedVideoRequest)
+      returns (stream AnnotatedFrame);
+
+  rpc DownloadAnnotatedVideo(DownloadAnnotatedVideoRequest)
+      returns (DownloadAnnotatedVideoResponse);
+}

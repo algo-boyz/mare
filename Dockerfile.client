@@ -1,0 +1,86 @@
+FROM ubuntu:25.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GIT_TERMINAL_PROMPT=0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake git pkg-config curl \
+    python3 python3-pip \
+    libprotobuf-dev protobuf-compiler \
+    libgrpc++-dev protobuf-compiler-grpc \
+    libssl-dev libcurl4-openssl-dev ca-certificates \
+    libopencv-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --break-system-packages --no-cache-dir "onnx>=1.16,<1.19"
+
+ARG ONNX_VERSION=1.22.0
+ARG TARGETARCH
+RUN set -eux; \
+  case "${TARGETARCH:-amd64}" in \
+    amd64)  _arch=x64 ;; \
+    arm64)  _arch=aarch64 ;; \
+    *) echo "unsupported arch: ${TARGETARCH}"; exit 1 ;; \
+  esac; \
+  mkdir -p /opt/onnxruntime; \
+  curl -fsSL \
+    "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-${_arch}-${ONNX_VERSION}.tgz" \
+    | tar -xz -C /opt/onnxruntime --strip-components=1; \
+  ls /opt/onnxruntime/lib
+
+WORKDIR /src
+COPY . .
+RUN rm -rf build CMakeCache.txt CMakeFiles
+
+# ensure model exists version <= 21
+RUN set -eux; \
+  if [ ! -f models/yolo11n.onnx ]; then \
+    ./scripts/download_model.sh; \
+  fi; \
+  python3 - <<'PY'
+import onnx
+from onnx import version_converter
+from pathlib import Path
+p = Path("models/yolo11n.onnx")
+m = onnx.load(str(p))
+opsets = {o.domain or "ai.onnx": o.version for o in m.opset_import}
+print("original opsets:", opsets)
+target = 21
+cur = opsets.get("ai.onnx", opsets.get("", 0))
+if cur > target:
+    print(f"converting ai.onnx opset {cur} -> {target}")
+    m = version_converter.convert_version(m, target)
+    onnx.save(m, str(p))
+    m2 = onnx.load(str(p))
+    print("new opsets:", {o.domain or "ai.onnx": o.version for o in m2.opset_import})
+else:
+    print("opset OK, no conversion")
+PY
+
+RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DONNXRUNTIME_ROOT=/opt/onnxruntime \
+      -DBUILD_CLICKHOUSE_CONSUMER=OFF \
+      -DWITH_OTEL=ON \
+    && cmake --build build -j$(nproc) --target edge_client
+
+# onnx runtime
+FROM ubuntu:25.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libprotobuf32t64 libgrpc++1.51t64 libssl3 \
+    libopencv-core410 libopencv-imgproc410 \
+    libopencv-imgcodecs410 libopencv-videoio410 \
+    libopencv-highgui410 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
+RUN ldconfig
+
+WORKDIR /app
+COPY --from=builder /src/build/edge_client /app/edge_client
+COPY --from=builder /src/models/yolo11n.onnx /app/models/yolo11n.onnx
+
+ENV INGEST_ADDR=ingest:50052
+# docker image CPU-only ORT
+ENV EDGE_FORCE_CPU=1
+ENTRYPOINT ["/app/edge_client"]
+CMD ["/app/assets/sample.mp4", "/app/models/yolo11n.onnx"]

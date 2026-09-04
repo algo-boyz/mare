@@ -1,0 +1,150 @@
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nats-publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/nats_publisher"]
+    environment:
+      NATS_URL: nats://nats:4222
+      GRPC_ADDR: 0.0.0.0:50051
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_ENVIRONMENT: docker
+    depends_on:
+      nats:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
+
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/ingest_server"]
+    environment:
+      GRPC_ADDR: 0.0.0.0:50052
+      PUBLISHER_ADDR: nats-publisher:50051
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_ENVIRONMENT: docker
+    depends_on: [nats-publisher, otel-collector]
+    ports:
+      - "50052:50052"
+
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/consumer"]
+    environment:
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_ENVIRONMENT: docker
+    depends_on: [nats-publisher, otel-collector]
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "pass"
+      CLICKHOUSE_DB: default
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  clickhouse-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["/app/clickhouse_consumer"]
+    restart: unless-stopped
+    environment:
+      NATS_URL: nats://nats:4222
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "pass"
+      CLICKHOUSE_DB: default
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_ENVIRONMENT: docker
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      nats-publisher:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # grpc
+      - "4318:4318"   # http
+
+  # CV client run
+  #   docker compose run --rm client /app/assets/sample.mp4 /app/models/yolo11n.onnx
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    profiles: ["client"]
+    environment:
+      INGEST_ADDR: ingest:50052
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_ENVIRONMENT: docker
+    depends_on: [ingest, otel-collector]
+    # pass through webcam on Linux
+    # devices:
+    #   - /dev/video0:/dev/video0
+    volumes:
+      - ${VIDEO_FILE:-./assets/sample.mp4}:/app/assets/sample.mp4:ro
+
+  video_server:
+    build:
+      context: .
+      dockerfile: Dockerfile.video
+    command: ["/app/video_server"]
+    environment:
+      GRPC_ADDR: 0.0.0.0:50053
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "9000"
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "pass"
+      CLICKHOUSE_DB: default
+      VIDEO_ROOT: /app/assets
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_ENVIRONMENT: docker
+    ports:
+      - "50053:50053"
+    volumes:
+      - ./assets:/app/assets:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:

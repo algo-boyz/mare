@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package nats.v1;
+
+option cc_enable_arenas = true;
+
+import "common/v1/error.proto";
+import "detection/v1/detection.proto";
+
+// Owns the NATS / JetStream connection and publishes domain events.
+service NatsPublisherService {
+  rpc PublishAlert(PublishAlertRequest) returns (PublishAlertResponse);
+}
+
+message PublishAlertRequest {
+  detection.v1.Alert alert = 1;
+  string subject = 2;          // optional, default "cv.alert"
+}
+
+message PublishAlertResponse {
+  bool   published = 1;
+  string subject   = 2;
+  uint64 sequence  = 3;        // JetStream sequence
+  common.v1.DomainError error = 4;
+}

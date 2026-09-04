@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package detection.v1;
+
+option cc_enable_arenas = true;
+
+import "common/v1/error.proto";
+import "detection/v1/detection.proto";
+
+service IngestService {
+  // Push a single CV alert (detections from one frame)
+  rpc IngestAlert(IngestAlertRequest) returns (IngestAlertResponse);
+}
+
+message IngestAlertRequest {
+  Alert alert = 1;
+}
+
+message IngestAlertResponse {
+  bool   accepted   = 1;
+  string message_id = 2;   // NATS / JetStream sequence if published
+  common.v1.DomainError error = 3;
+}
