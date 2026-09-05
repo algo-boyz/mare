@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package audio.v1;
+
+option cc_enable_arenas = true;
+
+import "google/protobuf/timestamp.proto";
+
+message Transcript {
+  string source = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  google.protobuf.Timestamp audio_start = 3;
+  google.protobuf.Timestamp audio_end = 4;
+  string text = 5;
+  bool is_final = 6;
+  float confidence = 7;
+  string language = 8;
+  string speaker_id = 9;
+  double e2e_latency_ms = 10;
+  map<string, string> labels = 11;
+}

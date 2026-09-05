@@ -52,9 +52,9 @@ Capture (OpenCV) > FrameQueue > Detector (ONNX YOLO) > Post-process > AlertCallb
 1. **Capture** – OpenCV `VideoCapture` (USB index or file) on its own thread, drop-old queue.
 2. **Inference** – ONNX YOLO (letterbox + CHW, NMS inside detector).
 3. **Post-process** – confidence floor, class filter, in-memory watchlist.
-4. **Alert** → grpc `IngestAlert` (frame_id, boxes, confidence, e2e latency, watchlist hit).
+4. **Alert** - grpc `IngestAlert` (frame_id, boxes, confidence, e2e latency, watchlist hit).
 
-## Stream with grpcurl
+## Video with grpcurl
 
 ```bash
 docker compose build --no-cache video_server
@@ -73,6 +73,15 @@ grpcurl -plaintext -d '{
 }' localhost:50053 detection.v1.AnnotatedVideoService/DownloadAnnotatedVideo
 # TODO create downloadable path on minio or such
 docker cp 8ff2cd0e42fd:/tmp/annotated_sample.mp4 ./
+```
+
+```bash
+docker compose build --no-cache audio_server
+
+grpcurl -plaintext -d '{
+  "source": "mic-01",
+  "include_partials": true
+}' localhost:50054 audio.v1.AudioLiveService/StreamPartials
 ```
 
 ## ClickHouse

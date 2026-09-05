@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package audio.v1;
+
+option cc_enable_arenas = true;
+
+import "audio/v1/transcript.proto";
+
+service AudioLiveService {
+  rpc StreamPartials(StreamPartialsRequest) returns (stream Transcript);
+}
+
+enum StreamMode {
+  STREAM_MODE_ALL = 0;
+  STREAM_MODE_PARTIALS = 1;
+  STREAM_MODE_FINALS = 2;
+}
+
+message StreamPartialsRequest {
+  // empty means every source on audio node
+  string source = 1;
+  StreamMode mode = 2;
+}

@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package ingest.v1;
+
+option cc_enable_arenas = true;
+
+import "common/v1/error.proto";
+import "audio/v1/transcript.proto";
+import "detection/v1/detection.proto";
+
+service IngestService {
+  // Push finalized line of recognized utterance
+  rpc IngestTranscript(IngestTranscriptRequest) returns (IngestTranscriptResponse);
+  // Push single CV alert (all detections from one frame)
+  rpc IngestAlert(IngestAlertRequest) returns (IngestAlertResponse);
+}
+
+message IngestAlertRequest {
+  detection.v1.Alert alert = 1;
+}
+
+message IngestAlertResponse {
+  bool   accepted   = 1;
+  string message_id = 2;   // NATS / JetStream sequence if published
+  common.v1.DomainError error = 3;
+}
+
+message IngestTranscriptRequest {
+  audio.v1.Transcript transcript = 1;
+}
+
+message IngestTranscriptResponse {
+  bool   accepted   = 1;
+  string message_id = 2;
+  common.v1.DomainError error = 3;
+}

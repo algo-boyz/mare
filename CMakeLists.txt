@@ -148,10 +148,12 @@ set(PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${PROTO_GEN_DIR})
 
 set(PROTO_FILES
+  ${PROTO_ROOT}/audio/v1/transcript.proto
+  ${PROTO_ROOT}/audio/v1/live_service.proto
   ${PROTO_ROOT}/common/v1/error.proto
   ${PROTO_ROOT}/detection/v1/detection.proto
-  ${PROTO_ROOT}/detection/v1/ingest_service.proto
   ${PROTO_ROOT}/detection/v1/annotated_video.proto
+  ${PROTO_ROOT}/ingest/v1/ingest_service.proto
   ${PROTO_ROOT}/nats/v1/publisher_service.proto
 )
 

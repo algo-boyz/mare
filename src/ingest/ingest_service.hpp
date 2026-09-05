@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#include "detection/v1/ingest_service.grpc.pb.h"
+#include "ingest/v1/ingest_service.grpc.pb.h"
 #include "nats/v1/publisher_service.grpc.pb.h"
 
 namespace edge {
