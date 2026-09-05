@@ -14,7 +14,7 @@ services:
   nats-publisher:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     command: ["/app/nats_publisher"]
     environment:
       NATS_URL: nats://nats:4222
@@ -31,7 +31,7 @@ services:
   ingest:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     command: ["/app/ingest_server"]
     environment:
       GRPC_ADDR: 0.0.0.0:50052
@@ -48,7 +48,7 @@ services:
   consumer:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     command: ["/app/consumer"]
     environment:
       NATS_URL: nats://nats:4222
@@ -80,7 +80,7 @@ services:
   clickhouse-consumer:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     command: ["/app/clickhouse_consumer"]
     restart: unless-stopped
     environment:
@@ -113,7 +113,7 @@ services:
   video_server:
     build:
       context: .
-      dockerfile: Dockerfile.video
+      dockerfile: docker/Dockerfile.video
     command: ["/app/video_server"]
     environment:
       GRPC_ADDR: 0.0.0.0:50053
@@ -141,7 +141,7 @@ services:
   cv-client:
     build:
       context: .
-      dockerfile: Dockerfile.client
+      dockerfile: docker/Dockerfile.client
     profiles: ["client"]
     environment:
       INGEST_ADDR: ingest:50052
@@ -165,7 +165,7 @@ services:
   audio-client:
     build:
       context: .
-      dockerfile: Dockerfile.audio
+      dockerfile: docker/Dockerfile.audio
     profiles: ["audio"]
     environment:
       LIVE_ADDR: 0.0.0.0:50054

@@ -12,9 +12,9 @@
 #include "common/env.hpp"
 #include "common/otel.hpp"
 #include "audio/v1/transcript.pb.h"
-#include "edge_audio/pipeline.hpp"
 #include "ingest/v1/ingest_service.grpc.pb.h"
 #include "live_service.hpp"
+#include "pipeline.hpp"
 
 namespace {
 

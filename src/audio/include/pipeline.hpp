@@ -1,6 +1,6 @@
 #pragma once
 
-#include "audio_capture.hpp"
+#include "capture.hpp"
 #include "transcriber.hpp"
 #include "types.hpp"
 

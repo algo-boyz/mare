@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1.7
+FROM ubuntu:25.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    GIT_TERMINAL_PROMPT=0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git file pkg-config curl ca-certificates \
+        libprotobuf-dev protobuf-compiler \
+        libgrpc++-dev protobuf-compiler-grpc \
+        libssl-dev libcurl4-openssl-dev \
+        libportaudio2 portaudio19-dev \
+        libasound2-dev \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# install pre-built sherpa-onnx (C-API + shared libs)
+ARG SHERPA_VERSION=1.13.7
+ARG TARGETARCH
+
+RUN set -eux; \
+    _arch="${TARGETARCH:-$(uname -m)}"; \
+    case "${_arch}" in \
+      amd64|x86_64|x64)   _arch=x64;      _pkg="linux-x64-shared-no-tts" ;; \
+      arm64|aarch64)      _arch=aarch64;  _pkg="linux-aarch64-shared-cpu" ;; \
+      *) echo "unsupported arch: ${_arch}"; exit 1 ;; \
+    esac; \
+    \
+    _url="https://github.com/k2-fsa/sherpa-onnx/releases/download/v${SHERPA_VERSION}/sherpa-onnx-v${SHERPA_VERSION}-${_pkg}.tar.bz2"; \
+    echo "Downloading ${_url}"; \
+    curl -fsSL "${_url}" | tar -xjf - -C /opt; \
+    \
+    _dir=$(find /opt -maxdepth 1 -type d -name "sherpa-onnx-v${SHERPA_VERSION}-${_pkg}*" | head -1); \
+    ln -sfn "${_dir}" /opt/sherpa-onnx; \
+    \
+    # fetch missing headers from aarch64 pkg
+    mkdir -p /opt/sherpa-onnx/include/sherpa-onnx/c-api; \
+    curl -fsSL \
+      "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v${SHERPA_VERSION}/sherpa-onnx/c-api/c-api.h" \
+      -o /opt/sherpa-onnx/include/sherpa-onnx/c-api/c-api.h; \
+    curl -fsSL \
+      "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v${SHERPA_VERSION}/sherpa-onnx/c-api/cxx-api.h" \
+      -o /opt/sherpa-onnx/include/sherpa-onnx/c-api/cxx-api.h; \
+    \
+    echo "Installed to /opt/sherpa-onnx"; \
+    ls -l /opt/sherpa-onnx/lib; \
+    ls -l /opt/sherpa-onnx/include/sherpa-onnx/c-api/; \
+    file /opt/sherpa-onnx/lib/libsherpa-onnx-c-api.so
+
+ENV SHERPA_ONNX_ROOT=/opt/sherpa-onnx
+# pkg-config / find_library visibility
+ENV PKG_CONFIG_PATH=/opt/sherpa-onnx/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
+ENV LD_LIBRARY_PATH=/opt/sherpa-onnx/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+WORKDIR /src
+COPY . .
+RUN rm -rf build CMakeCache.txt CMakeFiles \
+    && git config --global http.version HTTP/1.1
+
+RUN cmake -B build -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_CLICKHOUSE_CONSUMER=OFF \
+      -DWITH_OTEL=ON \
+      -DSHERPA_ONNX_ROOT=/opt/sherpa-onnx \
+    && cmake --build build -j$(nproc) --target edge_audio_client
+
+# runtime
+FROM ubuntu:25.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libprotobuf32t64 libgrpc++1.51t64 libssl3 ca-certificates \
+        libportaudio2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# copy the shared libraries from the release
+COPY --from=builder /opt/sherpa-onnx/lib/ /usr/local/lib/
+RUN ldconfig
+
+WORKDIR /app
+COPY --from=builder /src/build/edge_audio_client /app/
+
+# Model (bake or mount)
+COPY models/sherpa-onnx-streaming-zipformer-en-2023-06-26 \
+     /app/models/sherpa-onnx-streaming-zipformer-en-2023-06-26
+
+ENV LIVE_ADDR=0.0.0.0:50054 \
+    INGEST_ADDR=ingest:50052 \
+    SOURCE=mic \
+    INGEST_FINALS=1 \
+    PRINT_PARTIAL=1 \
+    SHERPA_MODEL_DIR=/app/models/sherpa-onnx-streaming-zipformer-en-2023-06-26 \
+    SHERPA_PROVIDER=cpu \
+    SHERPA_THREADS=2 \
+    LD_LIBRARY_PATH=/usr/local/lib
+
+ENTRYPOINT ["/app/edge_audio_client"]

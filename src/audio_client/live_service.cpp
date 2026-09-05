@@ -1,10 +1,9 @@
-#include "live_service.hpp"
-
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 
 #include <spdlog/spdlog.h>
+#include "live_service.hpp"
 
 namespace edge {
 
