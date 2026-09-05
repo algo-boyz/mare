@@ -226,6 +226,112 @@ if(WITH_OTEL)
   )
 endif()
 
+# sherpa-onnx (STT) + PortAudio (mic capture)
+find_path(SHERPA_ONNX_INCLUDE_DIR
+  NAMES sherpa-onnx/c-api/cxx-api.h
+  PATHS
+    /usr/local/include
+    /usr/include
+    $ENV{SHERPA_ONNX_ROOT}/include
+)
+
+find_library(SHERPA_ONNX_LIB
+  NAMES sherpa-onnx-c-api sherpa-onnx
+  PATHS
+    /usr/local/lib
+    /usr/lib
+    $ENV{SHERPA_ONNX_ROOT}/lib
+)
+
+if(NOT SHERPA_ONNX_INCLUDE_DIR OR NOT SHERPA_ONNX_LIB)
+  message(STATUS "sherpa-onnx not found on system – using FetchContent")
+  include(FetchContent)
+  FetchContent_Declare(
+    sherpa-onnx
+    GIT_REPOSITORY https://github.com/k2-fsa/sherpa-onnx.git
+    GIT_TAG        v1.10.46
+    GIT_SHALLOW    TRUE
+  )
+  set(SHERPA_ONNX_ENABLE_PYTHON OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_C_API  ON  CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_BINARY OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_CHECK  OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_PORTAUDIO OFF CACHE BOOL "" FORCE)
+  set(SHERPA_ONNX_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE)
+  set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(sherpa-onnx)
+  set(SHERPA_ONNX_INCLUDE_DIR ${sherpa-onnx_SOURCE_DIR})
+  set(SHERPA_ONNX_LIB sherpa-onnx-c-api)
+endif()
+
+# PortAudio
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(PORTAUDIO portaudio-2.0)
+endif()
+if(NOT PORTAUDIO_FOUND)
+  find_path(PORTAUDIO_INCLUDE_DIR portaudio.h)
+  find_library(PORTAUDIO_LIBRARY NAMES portaudio)
+  if(PORTAUDIO_INCLUDE_DIR AND PORTAUDIO_LIBRARY)
+    set(PORTAUDIO_FOUND TRUE)
+    set(PORTAUDIO_INCLUDE_DIRS ${PORTAUDIO_INCLUDE_DIR})
+    set(PORTAUDIO_LIBRARIES ${PORTAUDIO_LIBRARY})
+  endif()
+endif()
+
+if(NOT PORTAUDIO_FOUND)
+  message(STATUS "PortAudio not found – edge_audio / edge_audio_client will be skipped")
+  message(STATUS "  Ubuntu: sudo apt install libportaudio2 portaudio19-dev")
+  message(STATUS "  macOS:  brew install portaudio")
+endif()
+
+# edge_audio lib + edge_audio_client
+if(SHERPA_ONNX_LIB AND PORTAUDIO_FOUND)
+  add_library(edge_audio STATIC
+    src/audio/src/capture.cpp
+    src/audio/src/pipeline.cpp
+    src/audio/src/transcriber.cpp
+  )
+  target_include_directories(edge_audio PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio/include
+    ${SHERPA_ONNX_INCLUDE_DIR}
+    ${PORTAUDIO_INCLUDE_DIRS}
+  )
+  target_link_libraries(edge_audio PUBLIC
+    ${SHERPA_ONNX_LIB}
+    ${PORTAUDIO_LIBRARIES}
+    Threads::Threads
+  )
+
+  add_executable(edge_audio_client
+    src/audio_client/main.cpp
+    src/audio_client/live_service.cpp
+  )
+  target_include_directories(edge_audio_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/audio_client
+  )
+  target_link_libraries(edge_audio_client PRIVATE
+    edge_audio
+    edge_common
+    edge_proto
+  )
+
+  if(UNIX AND NOT APPLE)
+    set_target_properties(edge_audio_client PROPERTIES
+      BUILD_RPATH   "$ORIGIN"
+      INSTALL_RPATH "$ORIGIN"
+    )
+  endif()
+
+  message(STATUS "  edge_audio / edge_audio_client: ON")
+  message(STATUS "    sherpa-onnx: ${SHERPA_ONNX_INCLUDE_DIR}")
+  message(STATUS "    PortAudio:   ${PORTAUDIO_LIBRARIES}")
+else()
+  message(STATUS "  edge_audio / edge_audio_client: OFF (needs sherpa-onnx + PortAudio)")
+endif()
+
 if(OpenCV_FOUND AND ONNXRUNTIME_LIB)
   add_library(edge_cv
     src/cv/src/capture.cpp
@@ -301,6 +407,11 @@ if(ONNXRUNTIME_LIB)
   message(STATUS "  ONNX Runtime: ${ONNXRUNTIME_LIB}")
 else()
   message(STATUS "  ONNX Runtime: Disabled")
+endif()
+if(TARGET edge_audio)
+  message(STATUS "  Audio (sherpa + PortAudio): ON")
+else()
+  message(STATUS "  Audio (sherpa + PortAudio): OFF")
 endif()
 
 # video_server (needs OpenCV + clickhouse-cpp)

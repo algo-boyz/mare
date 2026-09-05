@@ -12,7 +12,7 @@
 
 #include "common/env.hpp"
 #include "common/otel.hpp"
-#include "detection/v1/ingest_service.grpc.pb.h"
+#include "ingest/v1/ingest_service.grpc.pb.h"
 #include "pipeline.hpp"
 
 namespace {
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
 
   auto channel = grpc::CreateChannel(ingest_addr,
                                      grpc::InsecureChannelCredentials());
-  auto stub = detection::v1::IngestService::NewStub(channel);
+  auto stub = ingest::v1::IngestService::NewStub(channel);
 
   edge_cv::Pipeline::Config cfg;
   cfg.source = source;

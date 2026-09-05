@@ -12,7 +12,7 @@
 #include "common/env.hpp"
 #include "common/otel.hpp"
 #include "audio/v1/transcript.pb.h"
-#include "edge_audio/audio_pipeline.hpp"
+#include "edge_audio/pipeline.hpp"
 #include "ingest/v1/ingest_service.grpc.pb.h"
 #include "live_service.hpp"
 
@@ -82,11 +82,11 @@ int main() {
 
   auto bus = std::make_shared<edge::TranscriptBroadcaster>();
 
-  std::unique_ptr<audio::v1::AudioIngestService::Stub> ingest_stub;
+  std::unique_ptr<ingest::v1::IngestService::Stub> ingest_stub;
   if (ingest_finals) {
     auto channel =
         grpc::CreateChannel(ingest_addr, grpc::InsecureChannelCredentials());
-    ingest_stub = audio::v1::AudioIngestService::NewStub(channel);
+    ingest_stub = ingest::v1::IngestService::NewStub(channel);
     spdlog::info("finals → ingest at {}", ingest_addr);
   } else {
     spdlog::info("INGEST_FINALS=0 – live stream only");
@@ -127,9 +127,9 @@ int main() {
     bus->publish(msg);  // partials + finals > live subscribers
 
     if (ev.is_final && ingest_stub) {
-      audio::v1::IngestTranscriptRequest req;
+      ingest::v1::IngestTranscriptRequest req;
       *req.mutable_transcript() = msg;
-      audio::v1::IngestTranscriptResponse resp;
+      ingest::v1::IngestTranscriptResponse resp;
       grpc::ClientContext ctx;
       ctx.set_deadline(std::chrono::system_clock::now() +
                        std::chrono::milliseconds(500));

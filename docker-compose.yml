@@ -20,7 +20,7 @@ services:
       NATS_URL: nats://nats:4222
       GRPC_ADDR: 0.0.0.0:50051
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
       OTEL_ENVIRONMENT: docker
     depends_on:
       nats:
@@ -37,9 +37,11 @@ services:
       GRPC_ADDR: 0.0.0.0:50052
       PUBLISHER_ADDR: nats-publisher:50051
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
       OTEL_ENVIRONMENT: docker
-    depends_on: [nats-publisher, otel-collector]
+    depends_on:
+      - nats-publisher
+      - otel-collector
     ports:
       - "50052:50052"
 
@@ -51,9 +53,11 @@ services:
     environment:
       NATS_URL: nats://nats:4222
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
       OTEL_ENVIRONMENT: docker
-    depends_on: [nats-publisher, otel-collector]
+    depends_on:
+      - nats-publisher
+      - otel-collector
 
   clickhouse:
     image: clickhouse/clickhouse-server:24.8
@@ -69,6 +73,9 @@ services:
       interval: 3s
       timeout: 2s
       retries: 10
+    # optional persistence
+    # volumes:
+    #   - clickhouse-data:/var/lib/clickhouse
 
   clickhouse-consumer:
     build:
@@ -84,7 +91,7 @@ services:
       CLICKHOUSE_PASSWORD: "pass"
       CLICKHOUSE_DB: default
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
       OTEL_ENVIRONMENT: docker
     depends_on:
       clickhouse:
@@ -100,27 +107,8 @@ services:
     volumes:
       - ./otel-config.yaml:/etc/otelcol/config.yaml:ro
     ports:
-      - "4317:4317"   # grpc
-      - "4318:4318"   # http
-
-  # CV client run
-  #   docker compose run --rm client /app/assets/sample.mp4 /app/models/yolo11n.onnx
-  client:
-    build:
-      context: .
-      dockerfile: Dockerfile.client
-    profiles: ["client"]
-    environment:
-      INGEST_ADDR: ingest:50052
-      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-      OTEL_EXPORTER_OTLP_INSECURE: true
-      OTEL_ENVIRONMENT: docker
-    depends_on: [ingest, otel-collector]
-    # pass through webcam on Linux
-    # devices:
-    #   - /dev/video0:/dev/video0
-    volumes:
-      - ${VIDEO_FILE:-./assets/sample.mp4}:/app/assets/sample.mp4:ro
+      - "4317:4317"   # gRPC
+      - "4318:4318"   # HTTP
 
   video_server:
     build:
@@ -145,6 +133,68 @@ services:
     depends_on:
       clickhouse:
         condition: service_healthy
+
+  # ── optional clients (profiles) ──────────────────────────
+
+  # Vision / CV client
+  #   docker compose --profile client run --rm cv-client /app/assets/sample.mp4 /app/models/yolo11n.onnx
+  cv-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    profiles: ["client"]
+    environment:
+      INGEST_ADDR: ingest:50052
+      EDGE_FORCE_CPU: "1"
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_ENVIRONMENT: docker
+    depends_on:
+      - ingest
+      - otel-collector
+    volumes:
+      - ${VIDEO_FILE:-./assets/sample.mp4}:/app/assets/sample.mp4:ro
+    # Uncomment on Linux to pass a webcam through:
+    # devices:
+    #   - /dev/video0:/dev/video0
+
+  # Audio / STT client
+  #   docker compose --profile audio up audio-client
+  # or one-shot:
+  #   docker compose --profile audio run --rm audio-client
+  audio-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio
+    profiles: ["audio"]
+    environment:
+      LIVE_ADDR: 0.0.0.0:50054
+      INGEST_ADDR: ingest:50052
+      SOURCE: ${AUDIO_SOURCE:-mic}          # mic | file | …
+      INGEST_FINALS: "1"
+      PRINT_PARTIAL: "1"
+      SHERPA_MODEL_DIR: /app/models/sherpa-onnx-streaming-zipformer-en-2023-06-26
+      SHERPA_PROVIDER: cpu
+      SHERPA_THREADS: "2"
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_ENVIRONMENT: docker
+    ports:
+      - "50054:50054"                       # AudioLiveService
+    depends_on:
+      - ingest
+      - otel-collector
+    # Optional: mount model from host instead of baking it into the image
+    # volumes:
+    #   - ./models/sherpa-onnx-streaming-zipformer-en-2023-06-26:/app/models/sherpa-onnx-streaming-zipformer-en-2023-06-26:ro
+    # Linux: give the container access to the host microphone
+    # devices:
+    #   - /dev/snd:/dev/snd
+    # or with PulseAudio / PipeWire:
+    # volumes:
+    #   - /run/user/1000/pulse:/run/user/1000/pulse
+    # environment:
+    #   PULSE_SERVER: unix:/run/user/1000/pulse/native
 
 volumes:
   clickhouse-data:
