@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --break-system-packages --no-cache-dir "onnx>=1.16,<1.19"
 
 ARG ONNX_VERSION=1.22.0
-ARG TARGETARCH=amd64
+ARG TARGETARCH
 RUN set -eux; \
     case "${TARGETARCH}" in \
       amd64)  _arch=x64 ;; \

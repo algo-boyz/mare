@@ -134,7 +134,18 @@ services:
       clickhouse:
         condition: service_healthy
 
-  # ── optional clients (profiles) ──────────────────────────
+  video_viewer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.viewer
+    environment:
+      VIDEO_SERVER_ADDR: video_server:50053
+      VIDEO_SOURCE: sample.mp4
+      HTTP_PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - video_server
 
   # Vision / CV client
   #   docker compose --profile client run --rm cv-client /app/assets/sample.mp4 /app/models/yolo11n.onnx

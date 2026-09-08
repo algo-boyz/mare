@@ -75,6 +75,22 @@ grpcurl -plaintext -d '{
 docker cp 8ff2cd0e42fd:/tmp/annotated_sample.mp4 ./
 ```
 
+### DBG with video_viewer
+```bash
+# terminal 1 – services (once)
+docker compose up -d nats nats-publisher ingest clickhouse clickhouse-consumer video_server
+
+# terminal 2 – run the CV pipeline so detections land in ClickHouse
+docker compose --profile client run --rm cv-client
+
+# terminal 3 – view annotated stream
+./build/video_viewer sample.mp4
+# or
+VIDEO_SERVER_ADDR=localhost:50053 VIDEO_SOURCE=sample.mp4 ./build/video_viewer
+```
+
+## Audio with grpcurl
+
 ```bash
 docker compose build --no-cache audio_server
 

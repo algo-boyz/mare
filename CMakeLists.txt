@@ -343,7 +343,7 @@ if(OpenCV_FOUND AND ONNXRUNTIME_LIB)
     Threads::Threads
   )
 
-  add_executable(edge_client src/client/main.cpp)
+  add_executable(edge_client src/cv_client/main.cpp)
   target_link_libraries(edge_client PRIVATE
     edge_cv edge_common edge_proto
   )
@@ -435,4 +435,27 @@ if(OpenCV_FOUND AND BUILD_CLICKHOUSE_CONSUMER)
   message(STATUS "  video_server: ON")
 else()
   message(STATUS "  video_server: OFF (needs OpenCV + BUILD_CLICKHOUSE_CONSUMER)")
+endif()
+
+# video_viewer (gRPC client + MJPEG HTTP)
+if(OpenCV_FOUND)
+  # header-only httplib
+  FetchContent_Declare(httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.18.3
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(httplib)
+
+  add_executable(video_viewer src/video_viewer/main.cpp)
+  target_include_directories(video_viewer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${OpenCV_INCLUDE_DIRS}
+    ${httplib_SOURCE_DIR}
+  )
+  target_link_libraries(video_viewer PRIVATE
+    edge_common
+    edge_proto
+    ${OpenCV_LIBS}
+  )
+  message(STATUS "  video_viewer: ON")
 endif()
