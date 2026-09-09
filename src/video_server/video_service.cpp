@@ -116,10 +116,14 @@ float AnnotatedVideoServiceImpl::iou(const DetBox& a, const DetBox& b) {
   if (union_area <= 0.f) return 0.f;
   return inter_area / union_area;
 }
-
+// ---------------------------------------------------------------------------
+// Build tracks with proper aging / pruning
+// ---------------------------------------------------------------------------
 std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
     const std::unordered_map<int64_t, std::vector<DetBox>>& dets_by_frame,
-    float iou_threshold) {
+    float iou_threshold,
+    int   max_misses) {
+
   // Collect sorted frame ids
   std::vector<int64_t> frame_ids;
   frame_ids.reserve(dets_by_frame.size());
@@ -128,62 +132,98 @@ std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
   }
   std::sort(frame_ids.begin(), frame_ids.end());
 
-  std::map<int, Track> tracks;          // track_id -> waypoints
-  std::map<int, DetBox> active_boxes;   // track_id -> last box
+  std::map<int, Track> tracks;                 // track_id → waypoints
+  std::map<int, DetBox> active_boxes;          // track_id → last box
+  std::map<int, int>    misses;                // track_id → consecutive misses
   int next_track_id = 0;
 
   for (int64_t fid : frame_ids) {
     const auto& dets = dets_by_frame.at(fid);
     std::vector<bool> used(dets.size(), false);
 
-    // Try to match existing active tracks
-    for (auto& [tid, last_box] : active_boxes) {
-      float best_iou = iou_threshold;
-      int best_idx = -1;
+    // --- 1. Try to match existing active tracks (highest-IoU first) ---
+    // Collect candidates sorted by IoU so we prefer strong matches
+    struct MatchCandidate {
+      int   tid;
+      int   det_idx;
+      float score;
+    };
+    std::vector<MatchCandidate> candidates;
+
+    for (const auto& [tid, last_box] : active_boxes) {
       for (size_t i = 0; i < dets.size(); ++i) {
         if (used[i]) continue;
-        // Prefer same class
         if (dets[i].class_id != last_box.class_id) continue;
         float score = iou(last_box, dets[i]);
-        if (score > best_iou) {
-          best_iou = score;
-          best_idx = static_cast<int>(i);
+        if (score > iou_threshold) {
+          candidates.push_back({tid, static_cast<int>(i), score});
         }
       }
-      if (best_idx >= 0) {
-        used[best_idx] = true;
-        const DetBox& matched = dets[best_idx];
-        tracks[tid].push_back({fid, matched});
-        last_box = matched;  // update active
-      }
-      // else: track stays with old last_box (will be held later)
     }
 
-    // Start new tracks for unmatched detections
+    // Greedy assignment sorted by score descending
+    std::sort(candidates.begin(), candidates.end(),
+              [](const MatchCandidate& a, const MatchCandidate& b) {
+                return a.score > b.score;
+              });
+
+    std::unordered_set<int> matched_tids;
+    for (const auto& c : candidates) {
+      if (matched_tids.count(c.tid) || used[c.det_idx]) continue;
+
+      used[c.det_idx] = true;
+      matched_tids.insert(c.tid);
+
+      const DetBox& matched = dets[c.det_idx];
+      tracks[c.tid].push_back({fid, matched});
+      active_boxes[c.tid] = matched;
+      misses[c.tid] = 0;                       // reset miss counter
+    }
+
+    // --- 2. Age unmatched tracks ---
+    std::vector<int> to_remove;
+    for (auto& [tid, last_box] : active_boxes) {
+      if (matched_tids.count(tid)) continue;
+      misses[tid]++;
+      if (misses[tid] > max_misses) {
+        to_remove.push_back(tid);
+      }
+    }
+    for (int tid : to_remove) {
+      active_boxes.erase(tid);
+      misses.erase(tid);
+      // track stays in `tracks` so we can still interpolate up to its last waypoint
+    }
+
+    // --- 3. Start new tracks for unmatched detections ---
     for (size_t i = 0; i < dets.size(); ++i) {
       if (used[i]) continue;
       int tid = next_track_id++;
       tracks[tid].push_back({fid, dets[i]});
       active_boxes[tid] = dets[i];
+      misses[tid] = 0;
     }
   }
 
-  spdlog::info("built {} tracks from {} detection frames", tracks.size(),
-               frame_ids.size());
+  spdlog::info("built {} tracks from {} detection frames (max_misses={})",
+               tracks.size(), frame_ids.size(), max_misses);
   return tracks;
 }
 
+// ---------------------------------------------------------------------------
+// Produce boxes for a given frame (exact / interpolate / hold)
+// ---------------------------------------------------------------------------
 std::vector<DetBox> AnnotatedVideoServiceImpl::boxes_for_frame(
     int64_t frame_id,
     const std::map<int, Track>& tracks,
     int max_hold_frames) {
+
   std::vector<DetBox> out;
 
   for (const auto& [tid, waypoints] : tracks) {
     if (waypoints.empty()) continue;
 
-    // Find the two surrounding waypoints (or exact)
-    // waypoints are sorted by frame_id
+    // waypoints are already sorted by frame_id
     auto it = std::lower_bound(
         waypoints.begin(), waypoints.end(), frame_id,
         [](const TrackWaypoint& wp, int64_t fid) {
@@ -197,11 +237,10 @@ std::vector<DetBox> AnnotatedVideoServiceImpl::boxes_for_frame(
     }
 
     if (it == waypoints.begin()) {
-      // Before first waypoint → no box
+      // Before first waypoint → nothing
       continue;
     }
 
-    // it points to the first waypoint with frame_id > current, or end
     auto prev = std::prev(it);
 
     if (it != waypoints.end()) {
@@ -212,22 +251,29 @@ std::vector<DetBox> AnnotatedVideoServiceImpl::boxes_for_frame(
         out.push_back(prev->box);
         continue;
       }
+
       const float t = static_cast<float>(frame_id - f0) /
                       static_cast<float>(f1 - f0);
 
       DetBox interp;
       interp.class_id   = prev->box.class_id;
       interp.class_name = prev->box.class_name;
-      // Confidence can stay at the previous value or be interpolated
       interp.confidence = prev->box.confidence * (1.f - t) +
-                          it->box.confidence * t;
+                          it->box.confidence   * t;
       interp.x1 = prev->box.x1 + t * (it->box.x1 - prev->box.x1);
       interp.y1 = prev->box.y1 + t * (it->box.y1 - prev->box.y1);
       interp.x2 = prev->box.x2 + t * (it->box.x2 - prev->box.x2);
       interp.y2 = prev->box.y2 + t * (it->box.y2 - prev->box.y2);
+
+      // Optional: drop if the interpolated box is almost completely outside
+      // (prevents weird “push-back” artefacts near the border)
+      // You can tune the threshold or remove this check if you prefer.
+      // const float img_w = ...; const float img_h = ...; // if known
+      // if (interp.x2 < 5 || interp.y2 < 5 || interp.x1 > img_w-5 || ...) continue;
+
       out.push_back(interp);
     } else {
-      // After last waypoint → hold for max_hold_frames
+      // After last waypoint → hold for a limited number of frames
       const int64_t last_f = prev->frame_id;
       if (frame_id - last_f <= max_hold_frames) {
         out.push_back(prev->box);
@@ -312,6 +358,7 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
                         std::string("ClickHouse error: ") + e.what());
   }
 
+  
   // Build tracks for smooth interpolation
   const auto tracks = build_tracks(dets_by_frame, /*iou_threshold=*/0.3f);
 
