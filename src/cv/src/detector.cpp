@@ -149,11 +149,12 @@ std::vector<Detection> Detector::postprocess(const float* output,
         float x2 = (cx + w * 0.5f - pad_x) / scale;
         float y2 = (cy + h * 0.5f - pad_y) / scale;
 
-        // clip
-        x1 = std::clamp(x1, 0.f, static_cast<float>(orig_w - 1));
-        y1 = std::clamp(y1, 0.f, static_cast<float>(orig_h - 1));
-        x2 = std::clamp(x2, 0.f, static_cast<float>(orig_w - 1));
-        y2 = std::clamp(y2, 0.f, static_cast<float>(orig_h - 1));
+        // Do NOT hard-clamp to image borders.
+        // Allowing coordinates outside [0,W)×[0,H) lets boxes translate clean
+        // off-screen instead of shrinking / bouncing against the edges.
+        // OpenCV drawing and downstream consumers already handle partial boxes.
+        // Only reject completely degenerate boxes (zero/negative area).
+        if (x2 <= x1 || y2 <= y1) continue;
 
         Detection d;
         d.class_id   = best_cls;

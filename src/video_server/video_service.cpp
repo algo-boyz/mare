@@ -1,8 +1,10 @@
 #include "video_service.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
+#include <limits>
 #include <mutex>
 #include <sstream>
 
@@ -97,6 +99,146 @@ AnnotatedVideoServiceImpl::load_detections(const std::string& source,
   return out;
 }
 
+float AnnotatedVideoServiceImpl::iou(const DetBox& a, const DetBox& b) {
+  const float inter_x1 = std::max(a.x1, b.x1);
+  const float inter_y1 = std::max(a.y1, b.y1);
+  const float inter_x2 = std::min(a.x2, b.x2);
+  const float inter_y2 = std::min(a.y2, b.y2);
+
+  const float inter_w = std::max(0.f, inter_x2 - inter_x1);
+  const float inter_h = std::max(0.f, inter_y2 - inter_y1);
+  const float inter_area = inter_w * inter_h;
+
+  const float area_a = std::max(0.f, a.x2 - a.x1) * std::max(0.f, a.y2 - a.y1);
+  const float area_b = std::max(0.f, b.x2 - b.x1) * std::max(0.f, b.y2 - b.y1);
+  const float union_area = area_a + area_b - inter_area;
+
+  if (union_area <= 0.f) return 0.f;
+  return inter_area / union_area;
+}
+
+std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
+    const std::unordered_map<int64_t, std::vector<DetBox>>& dets_by_frame,
+    float iou_threshold) {
+  // Collect sorted frame ids
+  std::vector<int64_t> frame_ids;
+  frame_ids.reserve(dets_by_frame.size());
+  for (const auto& [fid, _] : dets_by_frame) {
+    frame_ids.push_back(fid);
+  }
+  std::sort(frame_ids.begin(), frame_ids.end());
+
+  std::map<int, Track> tracks;          // track_id -> waypoints
+  std::map<int, DetBox> active_boxes;   // track_id -> last box
+  int next_track_id = 0;
+
+  for (int64_t fid : frame_ids) {
+    const auto& dets = dets_by_frame.at(fid);
+    std::vector<bool> used(dets.size(), false);
+
+    // Try to match existing active tracks
+    for (auto& [tid, last_box] : active_boxes) {
+      float best_iou = iou_threshold;
+      int best_idx = -1;
+      for (size_t i = 0; i < dets.size(); ++i) {
+        if (used[i]) continue;
+        // Prefer same class
+        if (dets[i].class_id != last_box.class_id) continue;
+        float score = iou(last_box, dets[i]);
+        if (score > best_iou) {
+          best_iou = score;
+          best_idx = static_cast<int>(i);
+        }
+      }
+      if (best_idx >= 0) {
+        used[best_idx] = true;
+        const DetBox& matched = dets[best_idx];
+        tracks[tid].push_back({fid, matched});
+        last_box = matched;  // update active
+      }
+      // else: track stays with old last_box (will be held later)
+    }
+
+    // Start new tracks for unmatched detections
+    for (size_t i = 0; i < dets.size(); ++i) {
+      if (used[i]) continue;
+      int tid = next_track_id++;
+      tracks[tid].push_back({fid, dets[i]});
+      active_boxes[tid] = dets[i];
+    }
+  }
+
+  spdlog::info("built {} tracks from {} detection frames", tracks.size(),
+               frame_ids.size());
+  return tracks;
+}
+
+std::vector<DetBox> AnnotatedVideoServiceImpl::boxes_for_frame(
+    int64_t frame_id,
+    const std::map<int, Track>& tracks,
+    int max_hold_frames) {
+  std::vector<DetBox> out;
+
+  for (const auto& [tid, waypoints] : tracks) {
+    if (waypoints.empty()) continue;
+
+    // Find the two surrounding waypoints (or exact)
+    // waypoints are sorted by frame_id
+    auto it = std::lower_bound(
+        waypoints.begin(), waypoints.end(), frame_id,
+        [](const TrackWaypoint& wp, int64_t fid) {
+          return wp.frame_id < fid;
+        });
+
+    if (it != waypoints.end() && it->frame_id == frame_id) {
+      // Exact detection
+      out.push_back(it->box);
+      continue;
+    }
+
+    if (it == waypoints.begin()) {
+      // Before first waypoint → no box
+      continue;
+    }
+
+    // it points to the first waypoint with frame_id > current, or end
+    auto prev = std::prev(it);
+
+    if (it != waypoints.end()) {
+      // Between prev and *it → linear interpolation
+      const int64_t f0 = prev->frame_id;
+      const int64_t f1 = it->frame_id;
+      if (f1 == f0) {
+        out.push_back(prev->box);
+        continue;
+      }
+      const float t = static_cast<float>(frame_id - f0) /
+                      static_cast<float>(f1 - f0);
+
+      DetBox interp;
+      interp.class_id   = prev->box.class_id;
+      interp.class_name = prev->box.class_name;
+      // Confidence can stay at the previous value or be interpolated
+      interp.confidence = prev->box.confidence * (1.f - t) +
+                          it->box.confidence * t;
+      interp.x1 = prev->box.x1 + t * (it->box.x1 - prev->box.x1);
+      interp.y1 = prev->box.y1 + t * (it->box.y1 - prev->box.y1);
+      interp.x2 = prev->box.x2 + t * (it->box.x2 - prev->box.x2);
+      interp.y2 = prev->box.y2 + t * (it->box.y2 - prev->box.y2);
+      out.push_back(interp);
+    } else {
+      // After last waypoint → hold for max_hold_frames
+      const int64_t last_f = prev->frame_id;
+      if (frame_id - last_f <= max_hold_frames) {
+        out.push_back(prev->box);
+      }
+      // else track is considered dead
+    }
+  }
+
+  return out;
+}
+
 void AnnotatedVideoServiceImpl::draw_boxes(cv::Mat& frame,
                                            const std::vector<DetBox>& boxes) {
   for (const auto& b : boxes) {
@@ -170,15 +312,18 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
                         std::string("ClickHouse error: ") + e.what());
   }
 
+  // Build tracks for smooth interpolation
+  const auto tracks = build_tracks(dets_by_frame, /*iou_threshold=*/0.3f);
+
   cv::VideoCapture cap(video_path.string());
   if (!cap.isOpened()) {
     return grpc::Status(grpc::StatusCode::INTERNAL,
                         "failed to open video: " + video_path.string());
   }
 
-  spdlog::info("streaming annotated video {} (start={}, end={}, only_dets={})",
+  spdlog::info("streaming annotated video {} (start={}, end={}, only_dets={}, tracks={})",
                video_path.string(), start_frame, end_frame,
-               request->only_with_detections());
+               request->only_with_detections(), tracks.size());
 
   int64_t frame_id = 0;
   cv::Mat frame;
@@ -198,8 +343,9 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
       break;
     }
 
-    auto it = dets_by_frame.find(frame_id);
-    const bool has_dets = it != dets_by_frame.end() && !it->second.empty();
+    // Synthesize smoothed boxes for this frame
+    std::vector<DetBox> boxes = boxes_for_frame(frame_id, tracks, /*max_hold=*/20);
+    const bool has_dets = !boxes.empty();
 
     if (request->only_with_detections() && !has_dets) {
       ++frame_id;
@@ -208,7 +354,7 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
 
     // Draw
     if (has_dets) {
-      draw_boxes(frame, it->second);
+      draw_boxes(frame, boxes);
     }
 
     // Encode
@@ -225,20 +371,18 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
     out.set_width(frame.cols);
     out.set_height(frame.rows);
     out.set_jpeg(buf.data(), buf.size());
-    out.set_detection_count(has_dets ? static_cast<int32_t>(it->second.size()) : 0);
+    out.set_detection_count(static_cast<int32_t>(boxes.size()));
 
-    if (has_dets) {
-      for (const auto& b : it->second) {
-        auto* d = out.add_detections();
-        d->set_class_id(b.class_id);
-        d->set_class_name(b.class_name);
-        d->set_confidence(b.confidence);
-        auto* box = d->mutable_box();
-        box->set_x1(b.x1);
-        box->set_y1(b.y1);
-        box->set_x2(b.x2);
-        box->set_y2(b.y2);
-      }
+    for (const auto& b : boxes) {
+      auto* d = out.add_detections();
+      d->set_class_id(b.class_id);
+      d->set_class_name(b.class_name);
+      d->set_confidence(b.confidence);
+      auto* box = d->mutable_box();
+      box->set_x1(b.x1);
+      box->set_y1(b.y1);
+      box->set_x2(b.x2);
+      box->set_y2(b.y2);
     }
 
     if (!writer->Write(out)) {
@@ -295,6 +439,9 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
                         std::string("ClickHouse error: ") + e.what());
   }
 
+  // Build tracks for smooth interpolation
+  const auto tracks = build_tracks(dets_by_frame, /*iou_threshold=*/0.3f);
+
   cv::VideoCapture cap(video_path.string());
   if (!cap.isOpened()) {
     return grpc::Status(grpc::StatusCode::INTERNAL,
@@ -347,9 +494,10 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
       break;
     }
 
-    auto it = dets_by_frame.find(frame_id);
-    if (it != dets_by_frame.end() && !it->second.empty()) {
-      draw_boxes(frame, it->second);
+    // Synthesize smoothed boxes
+    std::vector<DetBox> boxes = boxes_for_frame(frame_id, tracks, /*max_hold=*/20);
+    if (!boxes.empty()) {
+      draw_boxes(frame, boxes);
     }
 
     writer.write(frame);
@@ -363,7 +511,8 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
   response->set_total_frames(processed_frames);
   response->set_duration_sec(fps > 0 ? static_cast<double>(processed_frames) / fps : 0.0);
 
-  spdlog::info("generated downloaded video at {} ({} frames)", out_path.string(), processed_frames);
+  spdlog::info("generated downloaded video at {} ({} frames, {} tracks)",
+               out_path.string(), processed_frames, tracks.size());
   return grpc::Status::OK;
 }
 
