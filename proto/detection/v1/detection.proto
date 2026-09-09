@@ -15,10 +15,13 @@ message BoundingBox {
 }
 
 message Detection {
-  int32  class_id    = 1;
-  string class_name  = 2;
-  float  confidence  = 3;
-  BoundingBox box    = 4;
+  int32  class_id      = 1;
+  string class_name    = 2;
+  float  confidence    = 3;
+  BoundingBox box      = 4;
+  int32  track_id      = 5;
+  string ocr_text      = 6;
+  float ocr_confidence = 7;
 }
 
 // One pipeline alert (frame + detections + latency)

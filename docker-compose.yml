@@ -165,6 +165,7 @@ services:
       - otel-collector
     volumes:
       - ${VIDEO_FILE:-./assets/sample.mp4}:/app/assets/sample.mp4:ro
+      - ./models:/app/models:ro
     # Uncomment on Linux to pass a webcam through:
     # devices:
     #   - /dev/video0:/dev/video0

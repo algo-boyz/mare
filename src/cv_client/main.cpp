@@ -103,10 +103,10 @@ int main(int argc, char** argv) {
   cfg.on_alert = [&](const edge_cv::Alert& alert) {
     if (alert.detections.empty() && !alert.watchlist_hit) return;
 
-    detection::v1::IngestAlertRequest req;
+    ingest::v1::IngestAlertRequest req;
     *req.mutable_alert() = to_proto(alert, source);
 
-    detection::v1::IngestAlertResponse resp;
+    ingest::v1::IngestAlertResponse resp;
     grpc::ClientContext ctx;
     ctx.set_deadline(std::chrono::system_clock::now() +
                      std::chrono::milliseconds(800));
