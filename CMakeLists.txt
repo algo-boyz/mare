@@ -331,6 +331,8 @@ if(OpenCV_FOUND AND ONNXRUNTIME_LIB)
     src/cv/src/detector.cpp
     src/cv/src/pipeline.cpp
     src/cv/src/postprocess.cpp
+    src/cv/src/tracker.cpp
+    src/cv/src/plate.cpp
   )
   target_include_directories(edge_cv PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cv/include

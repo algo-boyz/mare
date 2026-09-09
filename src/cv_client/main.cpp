@@ -40,6 +40,11 @@ detection::v1::Alert to_proto(const edge_cv::Alert& a, const std::string& source
     box->set_y1(d.box.y1);
     box->set_x2(d.box.x2);
     box->set_y2(d.box.y2);
+    det->set_track_id(d.track_id);
+    if (!d.ocr_text.empty()) {
+      det->set_ocr_text(d.ocr_text);
+      det->set_ocr_confidence(d.ocr_confidence);
+    }
   }
   return out;
 }
@@ -79,20 +84,29 @@ int main(int argc, char** argv) {
   }
   cfg.queue_capacity = 2;
   cfg.print_latency = true;
+  cfg.tracker.iou_threshold = 0.3f;
+  cfg.tracker.max_age = 30;
+  cfg.tracker.min_hits = 2;
+  cfg.plates.enabled = true;
+  // Optional: set paths to real ONNX models when available
+  cfg.plates.plate_detector_model = "models/plate_det.onnx";
+  cfg.plates.plate_ocr_model      = "models/lprnet.onnx";
   cfg.watchlist = {
       {"person", 0.55f},
       {"car", 0.50f},
       {"truck", 0.50f},
+      // Example plate watchlist entry (match against OCR text)
+      {"AF29KX", 0.60f},
   };
 
   // On every alert → fire-and-forget grpc IngestAlert
   cfg.on_alert = [&](const edge_cv::Alert& alert) {
     if (alert.detections.empty() && !alert.watchlist_hit) return;
 
-    ingest::v1::IngestAlertRequest req;
+    detection::v1::IngestAlertRequest req;
     *req.mutable_alert() = to_proto(alert, source);
 
-    ingest::v1::IngestAlertResponse resp;
+    detection::v1::IngestAlertResponse resp;
     grpc::ClientContext ctx;
     ctx.set_deadline(std::chrono::system_clock::now() +
                      std::chrono::milliseconds(800));

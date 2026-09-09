@@ -3,6 +3,8 @@
 #include "capture.hpp"
 #include "detector.hpp"
 #include "postprocess.hpp"
+#include "tracker.hpp"
+#include "plate.hpp"
 #include "types.hpp"
 
 #include <atomic>
@@ -14,8 +16,7 @@
 namespace edge_cv {
 
 // e2e pipeline: capture thread > FrameQueue > processing thread > alert callback
-// pop frame > infer > filter > watchlist > alert > log
-// processing thread owns detector
+// process: infer > filter > track > OCR stage > watchlist > alert
 class Pipeline {
 public:
     using AlertCallback = std::function<void(const Alert&)>;
@@ -23,6 +24,8 @@ public:
     struct Config {
         std::string              source{"0"};          // cam idx / mp4 path
         Detector::Config         detector;
+        Tracker::Config          tracker;
+        PlateStage::Config       plates;
         size_t                   queue_capacity{2};
         std::vector<WatchlistEntry> watchlist;
         AlertCallback            on_alert;
@@ -49,10 +52,12 @@ private:
     std::shared_ptr<FrameQueue> queue_;
     std::unique_ptr<Capture>    capture_;
     std::unique_ptr<Detector>   detector_;
+    std::unique_ptr<Tracker>    tracker_;
+    std::unique_ptr<PlateStage> ocr_stage_;
 
     std::thread process_thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
 };
 
-}
+} // namespace edge_cv

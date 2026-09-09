@@ -59,10 +59,26 @@ bool check_watchlist(const std::vector<Detection>& dets,
                      std::string& matched_label) {
     matched_label.clear();
     for (const auto& d : dets) {
+        // Class-based watchlist (person, car, ...)
         for (const auto& w : watchlist) {
             if (d.class_name == w.label && d.confidence >= w.min_confidence) {
-                matched_label = d.class_name + ":" + w.label;
+                matched_label = d.class_name;
+                if (d.track_id >= 0) {
+                    matched_label += "#" + std::to_string(d.track_id);
+                }
                 return true;
+            }
+        }
+        // Plate-text watchlist: entry label can be a plate string e.g. "AF29KX"
+        if (!d.ocr_text.empty()) {
+            for (const auto& w : watchlist) {
+                if (d.ocr_text == w.label && d.ocr_confidence >= w.min_confidence) {
+                    matched_label = "plate:" + d.ocr_text;
+                    if (d.track_id >= 0) {
+                        matched_label += "#" + std::to_string(d.track_id);
+                    }
+                    return true;
+                }
             }
         }
     }

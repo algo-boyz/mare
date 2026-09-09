@@ -15,7 +15,8 @@ std::vector<Detection> nms(std::vector<Detection> dets, float iou_thresh);
 std::vector<Detection> filter_detections(
     const std::vector<Detection>& dets,
     float min_conf = 0.4f,
-    const std::vector<std::string>& keep_classes = {"person", "car", "truck", "bus", "motorcycle"});
+    const std::vector<std::string>& keep_classes = {
+        "person", "car", "truck", "bus", "motorcycle", "license_plate"});
 
 // mock correlation returning label if match found
 bool check_watchlist(const std::vector<Detection>& dets,

@@ -28,6 +28,9 @@ struct Detection {
     std::string class_name;
     float       confidence{0.f};
     BoundingBox box;
+    int         track_id{-1};           // assigned by tracker; -1 = untracked
+    std::string ocr_text;             // filled by OCR stage when available
+    float       ocr_confidence{0.f};  // OCR confidence
 };
 
 struct FrameMeta {
