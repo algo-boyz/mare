@@ -116,8 +116,9 @@ float AnnotatedVideoServiceImpl::iou(const DetBox& a, const DetBox& b) {
   if (union_area <= 0.f) return 0.f;
   return inter_area / union_area;
 }
+
 // ---------------------------------------------------------------------------
-// Build tracks with proper aging / pruning
+// Build tracks with IoU + direction/velocity gate
 // ---------------------------------------------------------------------------
 std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
     const std::unordered_map<int64_t, std::vector<DetBox>>& dets_by_frame,
@@ -135,14 +136,23 @@ std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
   std::map<int, Track> tracks;                 // track_id → waypoints
   std::map<int, DetBox> active_boxes;          // track_id → last box
   std::map<int, int>    misses;                // track_id → consecutive misses
+
+  // last observed velocity (pixels per frame) per track
+  // vx/vy == 0 means “no reliable motion yet”
+  std::map<int, std::pair<float, float>> velocity;   // tid → {vx, vy}
+
   int next_track_id = 0;
+
+  // Helper: box center
+  auto center = [](const DetBox& b) -> std::pair<float, float> {
+    return {(b.x1 + b.x2) * 0.5f, (b.y1 + b.y2) * 0.5f};
+  };
 
   for (int64_t fid : frame_ids) {
     const auto& dets = dets_by_frame.at(fid);
     std::vector<bool> used(dets.size(), false);
 
-    // --- 1. Try to match existing active tracks (highest-IoU first) ---
-    // Collect candidates sorted by IoU so we prefer strong matches
+    // --- 1. Collect candidates with IoU + direction gate ---
     struct MatchCandidate {
       int   tid;
       int   det_idx;
@@ -151,13 +161,38 @@ std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
     std::vector<MatchCandidate> candidates;
 
     for (const auto& [tid, last_box] : active_boxes) {
+      const auto [lx, ly] = center(last_box);
+      const auto& [vx, vy] = velocity[tid];          // may be {0,0}
+      const bool has_velocity = (vx != 0.f || vy != 0.f);
+
       for (size_t i = 0; i < dets.size(); ++i) {
         if (used[i]) continue;
         if (dets[i].class_id != last_box.class_id) continue;
+
         float score = iou(last_box, dets[i]);
-        if (score > iou_threshold) {
-          candidates.push_back({tid, static_cast<int>(i), score});
+        if (score <= iou_threshold) continue;
+
+        // ----- Direction / velocity gate -----
+        if (has_velocity) {
+          const auto [cx, cy] = center(dets[i]);
+          const float dx = cx - lx;
+          const float dy = cy - ly;
+
+          // Dot product with previous velocity
+          const float dot = dx * vx + dy * vy;
+
+          // Strongly opposite motion → reject
+          // (tunable: 0.0 is pure opposite, negative values allow some angle)
+          if (dot < -1.0f) {          // -1.0 is a good starting threshold
+            continue;
+          }
+
+          // Optional soft bonus for continuing in the same direction
+          // score *= (1.0f + 0.3f * std::max(0.f, dot / (std::hypot(dx,dy)*std::hypot(vx,vy) + 1e-6f)));
         }
+        // ------------------------------------
+
+        candidates.push_back({tid, static_cast<int>(i), score});
       }
     }
 
@@ -176,8 +211,18 @@ std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
 
       const DetBox& matched = dets[c.det_idx];
       tracks[c.tid].push_back({fid, matched});
+
+      // Update velocity (simple last-displacement)
+      {
+        const auto [lx, ly] = center(active_boxes[c.tid]);
+        const auto [cx, cy] = center(matched);
+        // We don’t know exact frame delta here (detections can be sparse),
+        // so we just store the raw displacement. It is still directionally useful.
+        velocity[c.tid] = {cx - lx, cy - ly};
+      }
+
       active_boxes[c.tid] = matched;
-      misses[c.tid] = 0;                       // reset miss counter
+      misses[c.tid] = 0;
     }
 
     // --- 2. Age unmatched tracks ---
@@ -192,7 +237,8 @@ std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
     for (int tid : to_remove) {
       active_boxes.erase(tid);
       misses.erase(tid);
-      // track stays in `tracks` so we can still interpolate up to its last waypoint
+      velocity.erase(tid);               // clean up
+      // track stays in `tracks` so interpolation can still use the last waypoints
     }
 
     // --- 3. Start new tracks for unmatched detections ---
@@ -202,6 +248,7 @@ std::map<int, Track> AnnotatedVideoServiceImpl::build_tracks(
       tracks[tid].push_back({fid, dets[i]});
       active_boxes[tid] = dets[i];
       misses[tid] = 0;
+      velocity[tid] = {0.f, 0.f};        // no velocity yet
     }
   }
 
