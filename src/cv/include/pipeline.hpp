@@ -16,7 +16,11 @@
 namespace edge_cv {
 
 // e2e pipeline: capture thread > FrameQueue > processing thread > alert callback
-// process: infer > filter > track > OCR stage > watchlist > alert
+// process: infer > filter > track > gated OCR stage > watchlist > alert
+//
+// Secondary stages (plate, future person attributes, etc.) are gated:
+// they only consume cycles when the prerequisite class is present and
+// the track has not already been satisfactorily identified.
 class Pipeline {
 public:
     using AlertCallback = std::function<void(const Alert&)>;
@@ -54,6 +58,9 @@ private:
     std::unique_ptr<Detector>   detector_;
     std::unique_ptr<Tracker>    tracker_;
     std::unique_ptr<PlateStage> ocr_stage_;
+
+    // Persistent per-track memory for gating secondary stages
+    TrackStateMap track_states_;
 
     std::thread process_thread_;
     std::atomic<bool> running_{false};

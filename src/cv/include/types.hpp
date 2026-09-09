@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <unordered_map>
 
 namespace edge_cv {
 
@@ -33,6 +34,18 @@ struct Detection {
     float       ocr_confidence{0.f};  // OCR confidence
 };
 
+// Per-track memory for gating expensive secondary stages (plate OCR, etc.)
+struct TrackState {
+    int         track_id{-1};
+    int         age{0};
+    int         frames_since_ocr{999};
+    std::string last_ocr_text;
+    float       last_ocr_conf{0.f};
+    bool        plate_confirmed{false};  // high-conf OCR obtained → skip future work
+};
+
+using TrackStateMap = std::unordered_map<int, TrackState>;
+
 struct FrameMeta {
     int64_t   frame_id{0};
     TimePoint capture_ts;
@@ -54,4 +67,4 @@ struct WatchlistEntry {
     float       min_confidence{0.5f};
 };
 
-}
+} // namespace edge_cv

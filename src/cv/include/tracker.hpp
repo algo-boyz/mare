@@ -16,12 +16,13 @@ namespace edge_cv {
 class Tracker {
 public:
     struct Config {
-        float iou_threshold   = 0.3f;   // min IoU to associate
-        int   max_age         = 30;     // frames without update before drop
-        int   min_hits        = 2;      // hits before track is confirmed
+        float iou_threshold   = 0.3f;
+        int   max_age         = 30;
+        int   min_hits        = 2;
     };
 
-    explicit Tracker(Config cfg = {}) : cfg_(cfg) {}
+    Tracker() : cfg_(Config{}) {}
+    explicit Tracker(Config cfg) : cfg_(cfg) {}
 
     // Updates tracks with new detections (modifies dets in-place: sets track_id).
     // Returns the same detections with track_ids filled.

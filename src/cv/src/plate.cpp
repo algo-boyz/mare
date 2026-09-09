@@ -65,6 +65,9 @@ PlateStage::PlateStage(const Config& cfg) : cfg_(cfg) {
         std::cout << "[PlateStage] No OCR model – using mock plate strings "
                   << "(swap in real LPRNet ONNX later)\n";
     }
+    std::cout << "[PlateStage] Gating enabled: refresh_interval="
+              << cfg_.ocr_refresh_interval
+              << "  confirm_thresh=" << cfg_.confirm_thresh << "\n";
 }
 
 BoundingBox PlateStage::heuristic_plate_roi(const BoundingBox& v) {
@@ -90,21 +93,36 @@ std::pair<std::string, float> PlateStage::run_ocr(const cv::Mat& plate_crop) {
     return {text, std::min(conf, 0.99f)};
 }
 
-void PlateStage::process(const cv::Mat& bgr_frame, std::vector<Detection>& dets) {
-    if (!cfg_.enabled || bgr_frame.empty()) return;
+void PlateStage::process(const cv::Mat& bgr_frame,
+                         std::vector<Detection>& dets,
+                         TrackStateMap& tracks) {
+    last_processed_count_ = 0;
+    if (!cfg_.enabled || bgr_frame.empty()) {
+        last_ms_ = 0.0;
+        return;
+    }
 
     auto t0 = Clock::now();
 
-    // Collect vehicle indices (limit work)
+    // ------------------------------------------------------------------
+    // 1. Cheap frame-level early-out: no vehicles → nothing to do
+    // ------------------------------------------------------------------
     std::vector<size_t> vehicles;
     for (size_t i = 0; i < dets.size(); ++i) {
         if (is_vehicle(dets[i].class_name) &&
-            dets[i].confidence >= cfg_.min_vehicle_conf) {
+            dets[i].confidence >= cfg_.min_vehicle_conf &&
+            dets[i].track_id >= 0) {
             vehicles.push_back(i);
         }
     }
+
+    if (vehicles.empty()) {
+        last_ms_ = 0.0;
+        return;
+    }
+
+    // Limit concurrent secondary load
     if (vehicles.size() > static_cast<size_t>(cfg_.max_vehicles)) {
-        // Keep highest confidence
         std::partial_sort(vehicles.begin(),
                           vehicles.begin() + cfg_.max_vehicles,
                           vehicles.end(),
@@ -116,8 +134,31 @@ void PlateStage::process(const cv::Mat& bgr_frame, std::vector<Detection>& dets)
 
     std::vector<Detection> extra_plates;
 
+    // ------------------------------------------------------------------
+    // 2. Per-vehicle gated processing
+    // ------------------------------------------------------------------
     for (size_t vi : vehicles) {
         auto& veh = dets[vi];
+        const int tid = veh.track_id;
+
+        // Ensure track state exists
+        auto& ts = tracks[tid];
+        if (ts.track_id < 0) {
+            ts.track_id = tid;
+        }
+
+        // Already have a confirmed plate and it is still fresh → re-attach only
+        if (ts.plate_confirmed &&
+            ts.frames_since_ocr < cfg_.ocr_refresh_interval &&
+            !ts.last_ocr_text.empty()) {
+            veh.ocr_text       = ts.last_ocr_text;
+            veh.ocr_confidence = ts.last_ocr_conf;
+            continue;   // skip expensive secondary work
+        }
+
+        // --------------------------------------------------------------
+        // Expensive path: secondary detector + OCR
+        // --------------------------------------------------------------
         BoundingBox plate_box;
 
         if (plate_det_) {
@@ -135,7 +176,6 @@ void PlateStage::process(const cv::Mat& bgr_frame, std::vector<Detection>& dets)
             float best = 0.f;
             BoundingBox best_box;
             for (const auto& pd : plate_dets) {
-                // Accept any class or specifically "license_plate" if model has it
                 if (pd.confidence > best) {
                     best = pd.confidence;
                     best_box = pd.box;
@@ -171,6 +211,12 @@ void PlateStage::process(const cv::Mat& bgr_frame, std::vector<Detection>& dets)
         veh.ocr_text       = text;
         veh.ocr_confidence = conf;
 
+        // Update track state
+        ts.last_ocr_text    = text;
+        ts.last_ocr_conf    = conf;
+        ts.frames_since_ocr = 0;
+        ts.plate_confirmed  = (conf >= cfg_.confirm_thresh);
+
         // Also emit a dedicated license_plate detection for OSD / alerts
         Detection pd;
         pd.class_id       = 1000;               // synthetic
@@ -179,15 +225,25 @@ void PlateStage::process(const cv::Mat& bgr_frame, std::vector<Detection>& dets)
         pd.box            = {static_cast<float>(px1), static_cast<float>(py1),
                              static_cast<float>(px2), static_cast<float>(py2)};
         pd.track_id       = veh.track_id;       // inherit parent track
-        pd.ocr_text     = text;
+        pd.ocr_text       = text;
         pd.ocr_confidence = conf;
         extra_plates.push_back(std::move(pd));
+
+        ++last_processed_count_;
     }
 
     // Append plate detections
     dets.insert(dets.end(),
                 std::make_move_iterator(extra_plates.begin()),
                 std::make_move_iterator(extra_plates.end()));
+
+    // ------------------------------------------------------------------
+    // 3. Age the counters for all live tracks (so refresh eventually fires)
+    // ------------------------------------------------------------------
+    for (auto& [id, ts] : tracks) {
+        ++ts.frames_since_ocr;
+        ++ts.age;
+    }
 
     auto t1 = Clock::now();
     last_ms_ = DurationMs(t1 - t0).count();

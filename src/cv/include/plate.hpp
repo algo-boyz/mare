@@ -15,35 +15,45 @@ namespace edge_cv {
 // Designed so the plate detector can be a second YOLO / RT-DETR ONNX
 // and the OCR can be a lightweight sequence model (or placeholder).
 //
-// For Phase 2:
-//  - optional dedicated plate detector ONNX (falls back to heuristic ROI)
-//  - simple OCR placeholder that can be swapped for a real ONNX LPRNet /
-//    fast-plate-ocr model later.
+// Gating:
+//  - Only runs when vehicles are present in the frame.
+//  - Skips work for tracks that already have a confirmed high-confidence plate
+//    (controlled by ocr_refresh_interval and confirm_thresh).
+//  - Limits concurrent secondary load via max_vehicles.
 class PlateStage {
 public:
     struct Config {
         std::string plate_detector_model;   // empty = heuristic ROI on vehicle
         std::string plate_ocr_model;        // empty = mock / placeholder OCR
-        float       min_vehicle_conf  = 0.45f;
-        float       min_plate_conf    = 0.30f;
-        int         max_vehicles     = 8;   // limit secondary load
-        bool        enabled          = true;
+        float       min_vehicle_conf   = 0.45f;
+        float       min_plate_conf     = 0.30f;
+        float       confirm_thresh     = 0.75f;  // OCR conf above this → plate_confirmed
+        int         max_vehicles       = 8;      // limit secondary load
+        int         ocr_refresh_interval = 20;   // re-OCR a confirmed track every N frames
+        bool        enabled            = true;
     };
 
     explicit PlateStage(const Config& cfg);
     ~PlateStage() = default;
 
-    // Runs on the full frame + current detections.
+    // Runs on the full frame + current detections + track state.
     // Mutates vehicle detections in-place: fills ocr_text / ocr_confidence
     // and may append extra "license_plate" detections.
-    void process(const cv::Mat& bgr_frame, std::vector<Detection>& dets);
+    // Also updates TrackStateMap for gating on future frames.
+    void process(const cv::Mat& bgr_frame,
+                 std::vector<Detection>& dets,
+                 TrackStateMap& tracks);
 
     double last_ms() const { return last_ms_; }
+
+    // How many vehicles actually ran secondary inference / OCR this frame
+    int last_processed_count() const { return last_processed_count_; }
 
 private:
     Config cfg_;
     std::unique_ptr<Detector> plate_det_;   // optional secondary detector
     double last_ms_{0.0};
+    int    last_processed_count_{0};
 
     // Heuristic: bottom-center region of a vehicle box is a good plate prior
     static BoundingBox heuristic_plate_roi(const BoundingBox& vehicle);
