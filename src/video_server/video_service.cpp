@@ -334,22 +334,22 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
   }
   video_path = fs::weakly_canonical(video_path);
 
-  // Basic path traversal protection
   if (!video_path.string().starts_with(fs::weakly_canonical(video_root_).string())) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "src path escape");
   }
 
   if (!fs::exists(video_path)) {
-    return grpc::Status(grpc::StatusCode::NOT_FOUND, "video not found: " + video_path.string());
+    return grpc::Status(grpc::StatusCode::NOT_FOUND,
+                        "video not found: " + video_path.string());
   }
 
   const int64_t start_frame = std::max<int64_t>(0, request->start_frame_id());
   const int64_t end_frame   = request->end_frame_id();
-  const int quality = request->jpeg_quality() > 0 && request->jpeg_quality() <= 100
+  const int quality = (request->jpeg_quality() > 0 && request->jpeg_quality() <= 100)
                           ? request->jpeg_quality()
                           : 85;
 
-  // preload detections
+  // Preload detections
   std::unordered_map<int64_t, std::vector<DetBox>> dets_by_frame;
   try {
     dets_by_frame = load_detections(request->source(), start_frame, end_frame);
@@ -358,9 +358,10 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
                         std::string("ClickHouse error: ") + e.what());
   }
 
-  
-  // Build tracks for smooth interpolation
-  const auto tracks = build_tracks(dets_by_frame, /*iou_threshold=*/0.3f);
+  // Build tracks (with aging)
+  const auto tracks = build_tracks(dets_by_frame,
+                                   /*iou_threshold=*/0.3f,
+                                   /*max_misses=*/8);
 
   cv::VideoCapture cap(video_path.string());
   if (!cap.isOpened()) {
@@ -368,9 +369,19 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
                         "failed to open video: " + video_path.string());
   }
 
-  spdlog::info("streaming annotated video {} (start={}, end={}, only_dets={}, tracks={})",
+  // Real-time pacing
+  double fps = cap.get(cv::CAP_PROP_FPS);
+  if (fps <= 1.0 || fps > 120.0) {
+    fps = 25.0;   // safe fallback
+  }
+  const auto frame_duration =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(1.0 / fps));
+  auto next_frame_time = std::chrono::steady_clock::now();
+
+  spdlog::info("streaming annotated video {} (start={}, end={}, only_dets={}, tracks={}, fps={:.2f})",
                video_path.string(), start_frame, end_frame,
-               request->only_with_detections(), tracks.size());
+               request->only_with_detections(), tracks.size(), fps);
 
   int64_t frame_id = 0;
   cv::Mat frame;
@@ -390,8 +401,8 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
       break;
     }
 
-    // Synthesize smoothed boxes for this frame
-    std::vector<DetBox> boxes = boxes_for_frame(frame_id, tracks, /*max_hold=*/20);
+    // Synthesize smoothed boxes
+    std::vector<DetBox> boxes = boxes_for_frame(frame_id, tracks, /*max_hold=*/12);
     const bool has_dets = !boxes.empty();
 
     if (request->only_with_detections() && !has_dets) {
@@ -439,6 +450,10 @@ grpc::Status AnnotatedVideoServiceImpl::StreamAnnotatedVideo(
 
     ++emitted;
     ++frame_id;
+
+    // Real-time pacing
+    next_frame_time += frame_duration;
+    std::this_thread::sleep_until(next_frame_time);
   }
 
   spdlog::info("finished stream emitted {} annotated frames", emitted);
@@ -451,11 +466,10 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
     detection::v1::DownloadAnnotatedVideoResponse* response) {
 
   if (request->source().empty()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "src required");
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "src required");
   }
 
-  // Resolve path VIDEO_ROOT
+  // Resolve path under VIDEO_ROOT
   fs::path video_path;
   if (fs::path(request->source()).is_absolute()) {
     video_path = request->source();
@@ -477,7 +491,7 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
   const int64_t start_frame = std::max<int64_t>(0, request->start_frame_id());
   const int64_t end_frame   = request->end_frame_id();
 
-  // Load detections using mutex
+  // Load detections
   std::unordered_map<int64_t, std::vector<DetBox>> dets_by_frame;
   try {
     dets_by_frame = load_detections(request->source(), start_frame, end_frame);
@@ -486,8 +500,10 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
                         std::string("ClickHouse error: ") + e.what());
   }
 
-  // Build tracks for smooth interpolation
-  const auto tracks = build_tracks(dets_by_frame, /*iou_threshold=*/0.3f);
+  // Build tracks
+  const auto tracks = build_tracks(dets_by_frame,
+                                   /*iou_threshold=*/0.3f,
+                                   /*max_misses=*/8);
 
   cv::VideoCapture cap(video_path.string());
   if (!cap.isOpened()) {
@@ -496,26 +512,22 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
   }
 
   double fps = request->fps() > 0 ? request->fps() : cap.get(cv::CAP_PROP_FPS);
-  if (fps <= 0) fps = 30.0; // Fallback default FPS
+  if (fps <= 0.0) fps = 30.0;
 
-  int width = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+  int width  = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
   int height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
 
-  // Output destination file in tmp dir
   fs::path out_path = fs::temp_directory_path() /
                       ("annotated_" + video_path.filename().string());
 
   cv::VideoWriter writer(out_path.string(),
-                         cv::VideoWriter::fourcc('a', 'v', 'c', '1'), // H.264
-                         fps,
-                         cv::Size(width, height));
+                         cv::VideoWriter::fourcc('a', 'v', 'c', '1'),
+                         fps, cv::Size(width, height));
 
   if (!writer.isOpened()) {
-    // use mp4 if avc1 isn't available
     writer.open(out_path.string(),
                 cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
-                fps,
-                cv::Size(width, height));
+                fps, cv::Size(width, height));
   }
 
   if (!writer.isOpened()) {
@@ -542,7 +554,7 @@ grpc::Status AnnotatedVideoServiceImpl::DownloadAnnotatedVideo(
     }
 
     // Synthesize smoothed boxes
-    std::vector<DetBox> boxes = boxes_for_frame(frame_id, tracks, /*max_hold=*/20);
+    std::vector<DetBox> boxes = boxes_for_frame(frame_id, tracks, /*max_hold=*/12);
     if (!boxes.empty()) {
       draw_boxes(frame, boxes);
     }
